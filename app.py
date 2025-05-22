@@ -90,7 +90,7 @@ if uploaded_file is not None:
         
         # Load model
         try:
-            model = load_model("best.pt")
+            model = load_model("pothole_best.pt")
         except Exception as e:
             st.error(f"Error loading model: {e}")
             st.info("Make sure 'best.pt' model file is in the same directory as this script")
