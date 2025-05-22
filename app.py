@@ -52,8 +52,10 @@ if 'original_video_path' not in st.session_state:
     st.session_state.original_video_path = None
 if 'file_type' not in st.session_state:
     st.session_state.file_type = None
-if 'inference_done' not in st.session_state:
-    st.session_state.inference_done = False
+if 'video_frames' not in st.session_state:
+    st.session_state.video_frames = []
+if 'annotated_frames' not in st.session_state:
+    st.session_state.annotated_frames = []
 
 # File uploader
 uploaded_file = st.file_uploader(
@@ -90,7 +92,7 @@ if uploaded_file is not None:
         
         # Load model
         try:
-            model = load_model("pothole_best.pt")
+            model = load_model("best.pt")
         except Exception as e:
             st.error(f"Error loading model: {e}")
             st.info("Make sure 'best.pt' model file is in the same directory as this script")
@@ -150,22 +152,29 @@ if uploaded_file is not None:
             
             frame_count = 0
             total_potholes = 0
+            original_frames = []
+            annotated_frames_list = []
             
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
+                # Store original frame (convert BGR to RGB for display)
+                original_frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                original_frames.append(original_frame_rgb)
+                
                 # Process frame
                 annotated_frame, pothole_count = process_image(frame, model, threshold)
                 total_potholes += pothole_count
+                annotated_frames_list.append(annotated_frame)
                 
                 # Write to output video
                 out.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
                 
                 # Update display every 30 frames (roughly every second for 30fps video)
                 if frame_count % max(1, int(fps)) == 0:
-                    video_placeholder.image(annotated_frame, channels="RGB", use_container_width=True)
+                    video_placeholder.image(annotated_frame, channels="RGB", width=600)
                 
                 frame_count += 1
                 progress = frame_count / total_frames
@@ -174,6 +183,10 @@ if uploaded_file is not None:
             
             cap.release()
             out.release()
+            
+            # Store frames in session state
+            st.session_state.video_frames = original_frames
+            st.session_state.annotated_frames = annotated_frames_list
             
             st.session_state.annotated_video_path = output_path
             st.session_state.inference_done = True
@@ -204,11 +217,11 @@ if uploaded_file is not None:
             
             with col1:
                 st.markdown("**Original Image**")
-                st.image(st.session_state.original_image, use_container_width=True)
+                st.image(st.session_state.original_image, width=400)
             
             with col2:
                 st.markdown("**Detected Potholes**")
-                st.image(st.session_state.annotated_image, channels="RGB", use_container_width=True)
+                st.image(st.session_state.annotated_image, channels="RGB", width=400)
             
             # Download button for annotated image
             if st.session_state.annotated_image is not None:
@@ -225,15 +238,34 @@ if uploaded_file is not None:
                 )
         
         elif st.session_state.file_type == 'video':
-            # For videos: show annotated video
-            st.subheader("🎬 Annotated Video")
+            # For videos: show frame selector and side-by-side comparison
+            st.subheader("🎬 Video Frame Analysis")
             
-            if st.session_state.annotated_video_path and os.path.exists(st.session_state.annotated_video_path):
-                # Display the processed video
-                video_file = open(st.session_state.annotated_video_path, 'rb')
-                video_bytes = video_file.read()
-                st.video(video_bytes)
-                video_file.close()
+            if st.session_state.video_frames and st.session_state.annotated_frames:
+                total_frames = len(st.session_state.video_frames)
+                
+                # Frame selector slider
+                selected_frame = st.slider(
+                    "Select Frame to Display",
+                    min_value=0,
+                    max_value=total_frames - 1,
+                    value=0,
+                    help=f"Choose which frame to view (Total frames: {total_frames})"
+                )
+                
+                # Display selected frame side by side
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Original Frame**")
+                    st.image(st.session_state.video_frames[selected_frame], width=400)
+                
+                with col2:
+                    st.markdown("**Detected Potholes**")
+                    st.image(st.session_state.annotated_frames[selected_frame], channels="RGB", width=400)
+                
+                # Show frame info
+                st.info(f"Displaying frame {selected_frame + 1} of {total_frames}")
                 
                 # Download buttons
                 col1, col2 = st.columns(2)
@@ -249,12 +281,12 @@ if uploaded_file is not None:
                 with col2:
                     st.download_button(
                         label="📥 Download Annotated Video",
-                        data=video_bytes,
+                        data=open(st.session_state.annotated_video_path, "rb").read(),
                         file_name=f"annotated_{uploaded_file.name}",
                         mime="video/mp4"
                     )
             else:
-                st.error("Annotated video not found. Please try uploading the video again.")
+                st.error("Video frames not found. Please try uploading the video again.")
 
 else:
     st.info("👆 Please upload an image or video file to get started")
