@@ -205,7 +205,7 @@ if uploaded_file is not None:
             # If threshold changed, reprocess the image
             if not need_inference:  # Only reprocess if file hasn't changed
                 try:
-                    model = load_model("best.pt")
+                    model = load_model("pothole_best.pt")
                     # Convert original image for processing
                     image_bgr = cv2.cvtColor(st.session_state.original_image, cv2.COLOR_RGB2BGR)
                     annotated_img, pothole_count = process_image(image_bgr, model, threshold)
