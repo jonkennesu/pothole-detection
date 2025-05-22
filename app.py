@@ -302,4 +302,4 @@ else:
 
 # Add footer
 st.markdown("---")
-st.markdown("*Make sure you have the 'best.pt' model file in your working directory*")
+st.markdown("*Make sure you have the 'pothole_best.pt' model file in your working directory*")
