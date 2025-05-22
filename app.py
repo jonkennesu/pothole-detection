@@ -95,7 +95,7 @@ if uploaded_file is not None:
             model = load_model("pothole_best.pt")
         except Exception as e:
             st.error(f"Error loading model: {e}")
-            st.info("Make sure 'best.pt' model file is in the same directory as this script")
+            st.info("Make sure 'pothole_best.pt' model file is in the same directory as this script")
             st.stop()
         
         if is_image:
