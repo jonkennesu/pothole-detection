@@ -1,12 +1,84 @@
 import os
+import sys
 import warnings
-warnings.filterwarnings('ignore')
 
-# Set environment variables before ANY imports
+# Set environment variables FIRST
 os.environ['YOLO_CONFIG_DIR'] = '/tmp'
 os.environ['TORCH_HOME'] = '/tmp/torch'
+warnings.filterwarnings('ignore')
 
+# CRITICAL FIX: Monkey patch Streamlit BEFORE any imports
+def patch_streamlit_watcher():
+    """Fix the torch.classes.__path__._path error by patching Streamlit's module watcher"""
+    try:
+        # Import the problematic module
+        from streamlit.watcher import local_sources_watcher
+        
+        # Store the original function
+        original_extract_paths = local_sources_watcher.extract_paths
+        
+        def safe_extract_paths(module):
+            """Safe version that handles torch.classes properly"""
+            try:
+                # Check if this is the problematic torch._classes module
+                if hasattr(module, '__name__') and module.__name__ == 'torch._classes':
+                    return []  # Return empty list for torch._classes
+                return original_extract_paths(module)
+            except (RuntimeError, AttributeError):
+                # If any error occurs, return empty list
+                return []
+        
+        # Replace the function
+        local_sources_watcher.extract_paths = safe_extract_paths
+        
+    except ImportError:
+        # If streamlit isn't imported yet, that's fine
+        pass
+
+# Apply the patch immediately
+patch_streamlit_watcher()
+
+# Now we can safely import streamlit
 import streamlit as st
+
+# Also patch torch._classes directly
+def patch_torch_classes():
+    """Direct patch for torch._classes to prevent the error"""
+    try:
+        import torch
+        
+        # Create a safe wrapper for torch._classes
+        original_classes = torch._classes
+        
+        class SafeTorchClasses:
+            def __init__(self, original):
+                self._original = original
+                
+            def __getattr__(self, name):
+                if name == '__path__':
+                    # Return a mock object that behaves like a path
+                    class MockPath:
+                        def __init__(self):
+                            self._path = []
+                        def __iter__(self):
+                            return iter(self._path)
+                    return MockPath()
+                elif name == '_path':
+                    return []
+                else:
+                    return getattr(self._original, name)
+        
+        # Replace torch._classes with our safe version
+        torch._classes = SafeTorchClasses(original_classes)
+        
+    except ImportError:
+        # torch not available yet
+        pass
+
+# Apply torch patch
+patch_torch_classes()
+
+# Now import everything else
 import cv2
 import tempfile
 import numpy as np
@@ -16,11 +88,17 @@ import io
 
 @st.cache_resource
 def load_model(path):
-    """Load YOLO model with delayed torch import"""
+    """Load YOLO model with maximum error handling"""
     try:
-        # Import torch and YOLO only when actually needed
+        # Import with additional safety
         import torch
         torch.set_num_threads(1)
+        
+        # Apply additional torch safety measures
+        if hasattr(torch, '_classes'):
+            # Ensure torch._classes has safe __path__ handling
+            if not hasattr(torch._classes, '__path__'):
+                torch._classes.__path__ = []
         
         from ultralytics import YOLO
         
