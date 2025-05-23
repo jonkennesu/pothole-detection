@@ -1,38 +1,61 @@
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set environment variables before ANY imports
+os.environ['YOLO_CONFIG_DIR'] = '/tmp'
+os.environ['TORCH_HOME'] = '/tmp/torch'
+
 import streamlit as st
 import cv2
 import tempfile
 import numpy as np
-import os
 import hashlib
-from ultralytics import YOLO
 from PIL import Image
 import io
 
 @st.cache_resource
 def load_model(path):
-    return YOLO(path)
+    """Load YOLO model with delayed torch import"""
+    try:
+        # Import torch and YOLO only when actually needed
+        import torch
+        torch.set_num_threads(1)
+        
+        from ultralytics import YOLO
+        
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Model file not found: {path}")
+        return YOLO(path)
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        raise e
 
 def compute_file_hash(file_bytes):
     return hashlib.md5(file_bytes).hexdigest()
 
 def process_image(image, model, threshold):
     """Process a single image and return annotated result with pothole count"""
-    img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = model.predict(source=img_rgb, conf=threshold, verbose=False)
-    
-    # Count potholes
-    pothole_count = 0
-    if results[0].boxes is not None:
-        pothole_count = len(results[0].boxes)
-    
-    # Get annotated image
-    annotated_frame = results[0].plot()
-    
-    # Add pothole count text to the annotated image
-    text = f"Potholes: {pothole_count}"
-    cv2.putText(annotated_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    
-    return annotated_frame, pothole_count
+    try:
+        img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        results = model.predict(source=img_rgb, conf=threshold, verbose=False)
+        
+        # Count potholes
+        pothole_count = 0
+        if results[0].boxes is not None:
+            pothole_count = len(results[0].boxes)
+        
+        # Get annotated image
+        annotated_frame = results[0].plot()
+        
+        # Add pothole count text to the annotated image
+        text = f"Potholes: {pothole_count}"
+        cv2.putText(annotated_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
+        return annotated_frame, pothole_count
+    except Exception as e:
+        st.error(f"Error processing image: {e}")
+        return None, 0
 
 # Page configuration
 st.set_page_config(page_title="Pothole Detection", layout="wide")
@@ -90,111 +113,138 @@ if uploaded_file is not None:
         st.session_state.file_type = 'image' if is_image else 'video'
         st.session_state.inference_done = False
         
-        # Load model
+        # Load model with better error handling
         try:
-            model = load_model("best.pt")
+            model_path = "pothole_best.pt"
+            if not os.path.exists(model_path):
+                st.error(f"❌ Model file '{model_path}' not found!")
+                st.info("📋 Please ensure 'pothole_best.pt' model file is in the same directory as this script")
+                st.stop()
+            
+            with st.spinner("🔄 Loading AI model..."):
+                model = load_model(model_path)
+            st.success("✅ Model loaded successfully!")
+            
         except Exception as e:
-            st.error(f"Error loading model: {e}")
-            st.info("Make sure 'best.pt' model file is in the same directory as this script")
+            st.error(f"❌ Error loading model: {e}")
             st.stop()
         
         if is_image:
             # Process image
             st.info("🔍 Processing image...")
             
-            # Convert bytes to image
-            image = Image.open(io.BytesIO(file_bytes))
-            image_np = np.array(image)
-            
-            # Convert RGB to BGR for OpenCV
-            if len(image_np.shape) == 3:
-                image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-            else:
-                image_bgr = image_np
-            
-            # Store original image
-            st.session_state.original_image = image_np
-            
-            # Process with model
-            annotated_img, pothole_count = process_image(image_bgr, model, threshold)
-            st.session_state.annotated_image = annotated_img
-            st.session_state.inference_done = True
-            
-            st.success(f"✅ Processing complete! Found {pothole_count} potholes")
+            try:
+                # Convert bytes to image
+                image = Image.open(io.BytesIO(file_bytes))
+                image_np = np.array(image)
+                
+                # Convert RGB to BGR for OpenCV
+                if len(image_np.shape) == 3:
+                    image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+                else:
+                    image_bgr = image_np
+                
+                # Store original image
+                st.session_state.original_image = image_np
+                
+                # Process with model
+                result = process_image(image_bgr, model, threshold)
+                if result[0] is not None:
+                    annotated_img, pothole_count = result
+                    st.session_state.annotated_image = annotated_img
+                    st.session_state.inference_done = True
+                    st.success(f"✅ Processing complete! Found {pothole_count} potholes")
+                else:
+                    st.error("❌ Failed to process image")
+                    
+            except Exception as e:
+                st.error(f"❌ Error processing image: {e}")
+                st.stop()
             
         elif is_video:
             # Process video
             st.info("🎥 Processing video... This may take a while.")
             
-            # Save uploaded video temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp:
-                tmp.write(file_bytes)
-                temp_video_path = tmp.name
-            
-            st.session_state.original_video_path = temp_video_path
-            
-            # Open video
-            cap = cv2.VideoCapture(temp_video_path)
-            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            # Output video path
-            output_path = os.path.join(tempfile.gettempdir(), f"annotated_{current_hash}.mp4")
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
-            
-            # Create placeholders for real-time display
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            video_placeholder = st.empty()
-            
-            frame_count = 0
-            total_potholes = 0
-            original_frames = []
-            annotated_frames_list = []
-            
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
+            try:
+                # Save uploaded video temporarily
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp:
+                    tmp.write(file_bytes)
+                    temp_video_path = tmp.name
                 
-                # Store original frame (convert BGR to RGB for display)
-                original_frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                original_frames.append(original_frame_rgb)
+                st.session_state.original_video_path = temp_video_path
                 
-                # Process frame
-                annotated_frame, pothole_count = process_image(frame, model, threshold)
-                total_potholes += pothole_count
-                annotated_frames_list.append(annotated_frame)
+                # Open video
+                cap = cv2.VideoCapture(temp_video_path)
+                if not cap.isOpened():
+                    st.error("❌ Could not open video file")
+                    st.stop()
                 
-                # Write to output video
-                out.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+                frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 
-                # Update display every 30 frames (roughly every second for 30fps video)
-                if frame_count % max(1, int(fps)) == 0:
-                    video_placeholder.image(annotated_frame, channels="RGB", width=600)
+                # Output video path
+                output_path = os.path.join(tempfile.gettempdir(), f"annotated_{current_hash}.mp4")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
                 
-                frame_count += 1
-                progress = frame_count / total_frames
-                progress_bar.progress(progress)
-                status_text.text(f"Processing frame {frame_count}/{total_frames} - Potholes detected so far: {total_potholes}")
-            
-            cap.release()
-            out.release()
-            
-            # Store frames in session state
-            st.session_state.video_frames = original_frames
-            st.session_state.annotated_frames = annotated_frames_list
-            
-            st.session_state.annotated_video_path = output_path
-            st.session_state.inference_done = True
-            
-            # Clear the real-time display elements
-            video_placeholder.empty()
-            
-            st.success(f"✅ Video processing complete! Total potholes detected: {total_potholes}")
+                # Create placeholders for real-time display
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                video_placeholder = st.empty()
+                
+                frame_count = 0
+                total_potholes = 0
+                original_frames = []
+                annotated_frames_list = []
+                
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    
+                    # Store original frame (convert BGR to RGB for display)
+                    original_frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    original_frames.append(original_frame_rgb)
+                    
+                    # Process frame
+                    result = process_image(frame, model, threshold)
+                    if result[0] is not None:
+                        annotated_frame, pothole_count = result
+                        total_potholes += pothole_count
+                        annotated_frames_list.append(annotated_frame)
+                        
+                        # Write to output video
+                        out.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+                        
+                        # Update display every 30 frames
+                        if frame_count % max(1, int(fps)) == 0:
+                            video_placeholder.image(annotated_frame, channels="RGB", width=600)
+                    
+                    frame_count += 1
+                    progress = frame_count / total_frames
+                    progress_bar.progress(progress)
+                    status_text.text(f"Processing frame {frame_count}/{total_frames} - Potholes detected so far: {total_potholes}")
+                
+                cap.release()
+                out.release()
+                
+                # Store frames in session state
+                st.session_state.video_frames = original_frames
+                st.session_state.annotated_frames = annotated_frames_list
+                
+                st.session_state.annotated_video_path = output_path
+                st.session_state.inference_done = True
+                
+                # Clear the real-time display elements
+                video_placeholder.empty()
+                
+                st.success(f"✅ Video processing complete! Total potholes detected: {total_potholes}")
+                
+            except Exception as e:
+                st.error(f"❌ Error processing video: {e}")
+                st.stop()
     
     # Display results based on file type and threshold changes
     if st.session_state.inference_done:
@@ -205,11 +255,13 @@ if uploaded_file is not None:
             # If threshold changed, reprocess the image
             if not need_inference:  # Only reprocess if file hasn't changed
                 try:
-                    model = load_model("best.pt")
+                    model = load_model("pothole_best.pt")
                     # Convert original image for processing
                     image_bgr = cv2.cvtColor(st.session_state.original_image, cv2.COLOR_RGB2BGR)
-                    annotated_img, pothole_count = process_image(image_bgr, model, threshold)
-                    st.session_state.annotated_image = annotated_img
+                    result = process_image(image_bgr, model, threshold)
+                    if result[0] is not None:
+                        annotated_img, pothole_count = result
+                        st.session_state.annotated_image = annotated_img
                 except Exception as e:
                     st.error(f"Error reprocessing image: {e}")
             
@@ -271,20 +323,24 @@ if uploaded_file is not None:
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.download_button(
-                        label="📥 Download Original Video",
-                        data=open(st.session_state.original_video_path, "rb").read(),
-                        file_name=f"original_{uploaded_file.name}",
-                        mime="video/mp4"
-                    )
+                    if os.path.exists(st.session_state.original_video_path):
+                        with open(st.session_state.original_video_path, "rb") as f:
+                            st.download_button(
+                                label="📥 Download Original Video",
+                                data=f.read(),
+                                file_name=f"original_{uploaded_file.name}",
+                                mime="video/mp4"
+                            )
                 
                 with col2:
-                    st.download_button(
-                        label="📥 Download Annotated Video",
-                        data=open(st.session_state.annotated_video_path, "rb").read(),
-                        file_name=f"annotated_{uploaded_file.name}",
-                        mime="video/mp4"
-                    )
+                    if os.path.exists(st.session_state.annotated_video_path):
+                        with open(st.session_state.annotated_video_path, "rb") as f:
+                            st.download_button(
+                                label="📥 Download Annotated Video",
+                                data=f.read(),
+                                file_name=f"annotated_{uploaded_file.name}",
+                                mime="video/mp4"
+                            )
             else:
                 st.error("Video frames not found. Please try uploading the video again.")
 
@@ -302,4 +358,4 @@ else:
 
 # Add footer
 st.markdown("---")
-st.markdown("*Make sure you have the 'best.pt' model file in your working directory*")
+st.markdown("*Make sure you have the 'pothole_best.pt' model file in your working directory*")
