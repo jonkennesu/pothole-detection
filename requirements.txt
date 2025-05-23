@@ -6,5 +6,4 @@ matplotlib
 numpy<2
 scipy
 seaborn
-torch>=2.0.0,<2.5.0
-torchvision>=0.15.0,<0.20.0
+torch>=2.5.0
