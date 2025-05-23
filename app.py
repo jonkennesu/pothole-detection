@@ -92,10 +92,10 @@ if uploaded_file is not None:
         
         # Load model
         try:
-            model = load_model("pothole_best.pt")
+            model = load_model("best.pt")
         except Exception as e:
             st.error(f"Error loading model: {e}")
-            st.info("Make sure 'pothole_best.pt' model file is in the same directory as this script")
+            st.info("Make sure 'best.pt' model file is in the same directory as this script")
             st.stop()
         
         if is_image:
@@ -205,7 +205,7 @@ if uploaded_file is not None:
             # If threshold changed, reprocess the image
             if not need_inference:  # Only reprocess if file hasn't changed
                 try:
-                    model = load_model("pothole_best.pt")
+                    model = load_model("best.pt")
                     # Convert original image for processing
                     image_bgr = cv2.cvtColor(st.session_state.original_image, cv2.COLOR_RGB2BGR)
                     annotated_img, pothole_count = process_image(image_bgr, model, threshold)
@@ -302,4 +302,4 @@ else:
 
 # Add footer
 st.markdown("---")
-st.markdown("*Make sure you have the 'pothole_best.pt' model file in your working directory*")
+st.markdown("*Make sure you have the 'best.pt' model file in your working directory*")
