@@ -1,5 +1,5 @@
-torch==2.0.1
-torchvision==0.15.2
+torch>=2.5.0
+torchvision>=0.20.0
 ultralytics
 opencv-python
 streamlit
@@ -7,4 +7,3 @@ Pillow
 matplotlib
 numpy
 scipy
-seaborn
