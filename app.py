@@ -1,10 +1,12 @@
 import os
 import warnings
-warnings.filterwarnings('ignore')
+import sys
 
-# Set environment variables
+# Suppress warnings
+warnings.filterwarnings('ignore')
 os.environ['YOLO_CONFIG_DIR'] = '/tmp'
 
+# Import everything EXCEPT torch/ultralytics first
 import streamlit as st
 import cv2
 import tempfile
@@ -13,14 +15,26 @@ import hashlib
 from PIL import Image
 import io
 
-@st.cache_resource
-def load_model(path):
-    """Load YOLO model"""
+# Global variable to store model
+_model = None
+
+def load_model_safely(path):
+    """Load YOLO model only when needed"""
+    global _model
+    
+    if _model is not None:
+        return _model
+    
     try:
+        # Import torch and ultralytics only when actually needed
+        import torch
         from ultralytics import YOLO
+        
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found: {path}")
-        return YOLO(path)
+        
+        _model = YOLO(path)
+        return _model
     except Exception as e:
         st.error(f"Error loading model: {e}")
         raise e
@@ -42,7 +56,7 @@ def process_image(image, model, threshold):
         # Get annotated image
         annotated_frame = results[0].plot()
         
-        # Add pothole count text to the annotated image
+        # Add pothole count text
         text = f"Potholes: {pothole_count}"
         cv2.putText(annotated_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
@@ -51,12 +65,12 @@ def process_image(image, model, threshold):
         st.error(f"Error processing image: {e}")
         return None, 0
 
-# Page configuration
+# Page config
 st.set_page_config(page_title="Pothole Detection", layout="wide")
 st.title("🕳️ Pothole Detection System")
 st.markdown("Upload an image or video to detect potholes automatically")
 
-# Initialize session state
+# Session state
 if 'processed_hash' not in st.session_state:
     st.session_state.processed_hash = None
 if 'original_image' not in st.session_state:
@@ -92,14 +106,14 @@ threshold = st.slider(
 )
 
 if uploaded_file is not None:
-    # Get file hash and type
+    # Get file info
     file_bytes = uploaded_file.read()
     current_hash = compute_file_hash(file_bytes)
     file_extension = uploaded_file.name.split('.')[-1].lower()
     is_image = file_extension in ['jpg', 'jpeg', 'png']
     is_video = file_extension in ['mp4', 'mov', 'avi']
     
-    # Check if we need to run inference (new file uploaded)
+    # Always process new files
     need_inference = current_hash != st.session_state.processed_hash
     
     if need_inference:
@@ -112,11 +126,11 @@ if uploaded_file is not None:
             model_path = "pothole_best.pt"
             if not os.path.exists(model_path):
                 st.error(f"❌ Model file '{model_path}' not found!")
-                st.info("📋 Please ensure 'pothole_best.pt' model file is in the same directory as this script")
+                st.info("📋 Please ensure 'pothole_best.pt' model file is in your repository")
                 st.stop()
             
             with st.spinner("🔄 Loading AI model..."):
-                model = load_model(model_path)
+                model = load_model_safely(model_path)
             st.success("✅ Model loaded successfully!")
             
         except Exception as e:
@@ -128,46 +142,40 @@ if uploaded_file is not None:
             st.info("🔍 Processing image...")
             
             try:
-                # Convert bytes to image
                 image = Image.open(io.BytesIO(file_bytes))
                 image_np = np.array(image)
                 
-                # Convert RGB to BGR for OpenCV
                 if len(image_np.shape) == 3:
                     image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
                 else:
                     image_bgr = image_np
                 
-                # Store original image
                 st.session_state.original_image = image_np
                 
-                # Process with model
                 result = process_image(image_bgr, model, threshold)
                 if result[0] is not None:
                     annotated_img, pothole_count = result
                     st.session_state.annotated_image = annotated_img
                     st.session_state.inference_done = True
-                    st.success(f"✅ Processing complete! Found {pothole_count} potholes")
+                    st.success(f"✅ Found {pothole_count} potholes")
                 else:
                     st.error("❌ Failed to process image")
                     
             except Exception as e:
-                st.error(f"❌ Error processing image: {e}")
+                st.error(f"❌ Error: {e}")
                 st.stop()
             
         elif is_video:
             # Process video
-            st.info("🎥 Processing video... This may take a while.")
+            st.info("🎥 Processing video...")
             
             try:
-                # Save uploaded video temporarily
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp:
                     tmp.write(file_bytes)
                     temp_video_path = tmp.name
                 
                 st.session_state.original_video_path = temp_video_path
                 
-                # Open video
                 cap = cv2.VideoCapture(temp_video_path)
                 if not cap.isOpened():
                     st.error("❌ Could not open video file")
@@ -178,12 +186,10 @@ if uploaded_file is not None:
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 
-                # Output video path
                 output_path = os.path.join(tempfile.gettempdir(), f"annotated_{current_hash}.mp4")
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
                 
-                # Create placeholders for real-time display
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 video_placeholder = st.empty()
@@ -198,43 +204,35 @@ if uploaded_file is not None:
                     if not ret:
                         break
                     
-                    # Store original frame (convert BGR to RGB for display)
                     original_frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     original_frames.append(original_frame_rgb)
                     
-                    # Process frame
                     result = process_image(frame, model, threshold)
                     if result[0] is not None:
                         annotated_frame, pothole_count = result
                         total_potholes += pothole_count
                         annotated_frames_list.append(annotated_frame)
                         
-                        # Write to output video
                         out.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
                         
-                        # Update display every 30 frames
                         if frame_count % max(1, int(fps)) == 0:
                             video_placeholder.image(annotated_frame, channels="RGB", width=600)
                     
                     frame_count += 1
                     progress = frame_count / total_frames
                     progress_bar.progress(progress)
-                    status_text.text(f"Processing frame {frame_count}/{total_frames} - Potholes detected so far: {total_potholes}")
+                    status_text.text(f"Frame {frame_count}/{total_frames} - Potholes: {total_potholes}")
                 
                 cap.release()
                 out.release()
                 
-                # Store frames in session state
                 st.session_state.video_frames = original_frames
                 st.session_state.annotated_frames = annotated_frames_list
-                
                 st.session_state.annotated_video_path = output_path
                 st.session_state.inference_done = True
                 
-                # Clear the real-time display elements
                 video_placeholder.empty()
-                
-                st.success(f"✅ Video processing complete! Total potholes detected: {total_potholes}")
+                st.success(f"✅ Video complete! Total potholes: {total_potholes}")
                 
             except Exception as e:
                 st.error(f"❌ Error processing video: {e}")
@@ -242,21 +240,8 @@ if uploaded_file is not None:
     
     # Display results
     if st.session_state.inference_done:
-        if st.session_state.file_type == 'image' and st.session_state.original_image is not None:
-            # For images: show side by side comparison
+        if st.session_state.file_type == 'image':
             st.subheader("🖼️ Detection Results")
-            
-            # If threshold changed, reprocess the image
-            if not need_inference:
-                try:
-                    model = load_model("pothole_best.pt")
-                    image_bgr = cv2.cvtColor(st.session_state.original_image, cv2.COLOR_RGB2BGR)
-                    result = process_image(image_bgr, model, threshold)
-                    if result[0] is not None:
-                        annotated_img, pothole_count = result
-                        st.session_state.annotated_image = annotated_img
-                except Exception as e:
-                    st.error(f"Error reprocessing image: {e}")
             
             col1, col2 = st.columns(2)
             
@@ -268,7 +253,7 @@ if uploaded_file is not None:
                 st.markdown("**Detected Potholes**")
                 st.image(st.session_state.annotated_image, channels="RGB", width=400)
             
-            # Download button for annotated image
+            # Download button
             if st.session_state.annotated_image is not None:
                 pil_image = Image.fromarray(st.session_state.annotated_image)
                 buf = io.BytesIO()
@@ -282,22 +267,19 @@ if uploaded_file is not None:
                 )
         
         elif st.session_state.file_type == 'video':
-            # For videos: show frame selector and side-by-side comparison
             st.subheader("🎬 Video Frame Analysis")
             
             if st.session_state.video_frames and st.session_state.annotated_frames:
                 total_frames = len(st.session_state.video_frames)
                 
-                # Frame selector slider
                 selected_frame = st.slider(
                     "Select Frame to Display",
                     min_value=0,
                     max_value=total_frames - 1,
                     value=0,
-                    help=f"Choose which frame to view (Total frames: {total_frames})"
+                    help=f"Total frames: {total_frames}"
                 )
                 
-                # Display selected frame side by side
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -308,8 +290,7 @@ if uploaded_file is not None:
                     st.markdown("**Detected Potholes**")
                     st.image(st.session_state.annotated_frames[selected_frame], channels="RGB", width=400)
                 
-                # Show frame info
-                st.info(f"Displaying frame {selected_frame + 1} of {total_frames}")
+                st.info(f"Frame {selected_frame + 1} of {total_frames}")
                 
                 # Download buttons
                 col1, col2 = st.columns(2)
@@ -333,21 +314,16 @@ if uploaded_file is not None:
                                 file_name=f"annotated_{uploaded_file.name}",
                                 mime="video/mp4"
                             )
-            else:
-                st.error("Video frames not found. Please try uploading the video again.")
 
 else:
-    st.info("👆 Please upload an image or video file to get started")
+    st.info("👆 Upload an image or video file to detect potholes")
     st.markdown("""
     ### Features:
-    - 🖼️ **Image Detection**: Upload JPG, JPEG, or PNG images
-    - 🎥 **Video Detection**: Upload MP4, MOV, or AVI videos  
-    - 🎚️ **Adjustable Threshold**: Fine-tune detection sensitivity
-    - 📊 **Real-time Processing**: Watch video analysis in progress
-    - 📥 **Download Results**: Get both original and annotated files
-    - 🔄 **Smart Caching**: Avoid reprocessing the same file
+    - 🖼️ **Image Detection**: JPG, JPEG, PNG
+    - 🎥 **Video Detection**: MP4, MOV, AVI  
+    - 🎚️ **Adjustable Threshold**: Fine-tune sensitivity
+    - 📥 **Download Results**: Get annotated files
     """)
 
-# Add footer
 st.markdown("---")
-st.markdown("*Make sure you have the 'pothole_best.pt' model file in your working directory*")
+st.markdown("*Ensure 'pothole_best.pt' model file is in your repository*")
